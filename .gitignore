@@ -1,0 +1,43 @@
+# Secrets / environment
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+credentials.json
+secrets.json
+
+# Logs
+*.log
+spark_run.log
+producer.log
+producer_verify.log
+kafka.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Spark / Hadoop / Kafka local state
+checkpoints/
+spark-warehouse/
+derby.log
+metastore_db/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude local config
+.claude/
