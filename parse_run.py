@@ -14,11 +14,11 @@ total_records = re.findall(r"total_records=(\d+)", text)
 total_resyncs = re.findall(r"total_resyncs=(\d+)", text)
 
 last_quotes = {}
-for sym, bid, ask, spread in re.findall(
-    r"\[([A-Z0-9\-]+)\] best_bid=([\w.\-]+) best_ask=([\w.\-]+) spread=([\w.\-]+)",
+for key, bid, ask, spread in re.findall(
+    r"\[([a-z]+:[A-Z0-9\-]+)\] best_bid=([\w.\-]+) best_ask=([\w.\-]+) spread=([\w.\-]+)",
     text,
 ):
-    last_quotes[sym] = (bid, ask, spread)
+    last_quotes[key] = (bid, ask, spread)
 
 def mean(xs):
     return sum(xs) / len(xs) if xs else 0.0
@@ -40,9 +40,9 @@ print(f"mean ms/batch:         {mean_ms:.2f}")
 print(f"peak events/sec:       {peak_rps:.2f}")
 print(f"peak batch size:       {peak_batch}")
 print("-" * 60)
-print("last quote per symbol (compare one of these to a REST call):")
-for sym, (bid, ask, spread) in last_quotes.items():
-    print(f"  {sym}: best_bid={bid}  best_ask={ask}  spread={spread}")
+print("last quote per book (compare one of these to a REST call):")
+for key, (bid, ask, spread) in last_quotes.items():
+    print(f"  {key}: best_bid={bid}  best_ask={ask}  spread={spread}")
 print("=" * 60)
 print("\nPaste-ready sentence:")
 print(

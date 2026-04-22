@@ -20,8 +20,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.resolve()
 SPARK_LOG = ROOT / "spark_run.log"
-PRODUCER_LOG = ROOT / "producer.log"
 KAFKA_LOG = ROOT / "kafka.log"
+
+# Which producers to launch. Comma-separated, any subset of:
+#   coinbase, binance, kraken
+# Each has its own producer script and its own log file.
+EXCHANGES = [
+    x.strip().lower()
+    for x in os.environ.get("EXCHANGES", "coinbase").split(",")
+    if x.strip()
+]
+PRODUCER_SCRIPTS = {
+    "coinbase": "producer_stream.py",
+    "binance": "producer_binance.py",
+    "kraken": "producer_kraken.py",
+}
 
 JAVA_HOME = r"C:\Program Files\Microsoft\jdk-17.0.18.8-hotspot"
 KAFKA_HOME = r"C:\tools\kafka_2.13-3.9.0"
@@ -82,17 +95,26 @@ def start_kafka():
     return proc
 
 
-def start_producer():
-    print("[producer] starting...")
-    log = open(PRODUCER_LOG, "w", encoding="utf-8", errors="replace")
+def start_producer(exchange):
+    script = PRODUCER_SCRIPTS.get(exchange)
+    if script is None:
+        print(f"[FATAL] unknown exchange '{exchange}' (known: {list(PRODUCER_SCRIPTS)})")
+        sys.exit(1)
+    log_path = ROOT / f"producer_{exchange}.log"
+    print(f"[producer:{exchange}] starting {script} -> {log_path.name}")
+    log = open(log_path, "w", encoding="utf-8", errors="replace")
     proc = subprocess.Popen(
-        [sys.executable, "producer_stream.py"],
+        [sys.executable, script],
         cwd=ROOT,
         stdout=log,
         stderr=subprocess.STDOUT,
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
     )
     return proc
+
+
+def start_producers():
+    return [(ex, start_producer(ex)) for ex in EXCHANGES]
 
 
 def start_spark():
@@ -145,11 +167,11 @@ def parse_log():
     trs = re.findall(r"total_resyncs=(\d+)", text)
 
     last_quotes = {}
-    for sym, bid, ask, spread in re.findall(
-        r"\[([A-Z0-9\-]+)\] best_bid=([\w.\-]+) best_ask=([\w.\-]+) spread=([\w.\-]+)",
+    for key, bid, ask, spread in re.findall(
+        r"\[([a-z]+:[A-Z0-9\-]+)\] best_bid=([\w.\-]+) best_ask=([\w.\-]+) spread=([\w.\-]+)",
         text,
     ):
-        last_quotes[sym] = (bid, ask, spread)
+        last_quotes[key] = (bid, ask, spread)
 
     def mean(xs):
         return sum(xs) / len(xs) if xs else 0.0
@@ -172,9 +194,9 @@ def parse_log():
     print(f"peak events/sec:       {peak_rps:.2f}")
     print(f"peak batch size:       {peak_batch}")
     print("-" * 60)
-    print("last quote per symbol (compare one to a REST call):")
-    for sym, (bid, ask, spread) in last_quotes.items():
-        print(f"  {sym}: best_bid={bid}  best_ask={ask}  spread={spread}")
+    print("last quote per book (compare one to a REST call):")
+    for key, (bid, ask, spread) in last_quotes.items():
+        print(f"  {key}: best_bid={bid}  best_ask={ask}  spread={spread}")
     print("=" * 60)
     print("\nPaste-ready sentence:")
     print(
@@ -186,15 +208,17 @@ def parse_log():
 
 
 def main():
+    print(f"[run] exchanges={EXCHANGES} duration={DURATION}s")
     kafka_proc = start_kafka()
-    producer = start_producer()
+    producers = start_producers()
     spark = start_spark()
 
     print(f"[spark] waiting for first batch (up to 3 min)...")
     if not wait_for_first_batch():
         print("[FATAL] Spark never produced a batch. Check spark_run.log.")
         kill_tree(spark.pid)
-        kill_tree(producer.pid)
+        for _, p in producers:
+            kill_tree(p.pid)
         sys.exit(1)
     print("[spark] first batch received, starting timer")
 
@@ -206,8 +230,9 @@ def main():
         time.sleep(5)
     print()
 
-    print("[run] shutting down producer + spark")
-    kill_tree(producer.pid)
+    print("[run] shutting down producers + spark")
+    for _, p in producers:
+        kill_tree(p.pid)
     kill_tree(spark.pid)
     time.sleep(3)
 

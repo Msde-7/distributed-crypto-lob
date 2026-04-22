@@ -3,7 +3,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, BooleanType, LongType
 
-from resync import load_coinbase_snapshot
+from resync import load_snapshot
 from order_book import OrderBook
 
 spark = SparkSession.builder \
@@ -20,15 +20,27 @@ schema = StructType([
     StructField("quantity", DoubleType(), True),
     StructField("event_time", StringType(), True),
     StructField("sequence", LongType(), True),
-    StructField("is_snapshot", BooleanType(), True)
+    StructField("first_sequence", LongType(), True),
+    StructField("is_snapshot", BooleanType(), True),
+    StructField("checksum", LongType(), True),
 ])
 
+# one book per (exchange, symbol) so venues never get mixed
 books = {}
+# per-book resync timestamps to avoid hammering REST during sustaned gaps
+last_resync_at = {}
+RESYNC_MIN_INTERVAL_SEC = 2.0
+
 metrics = {
     "total_batches": 0,
     "total_records": 0,
-    "total_resyncs": 0
+    "total_resyncs": 0,
 }
+
+
+def _book_key(exchange, symbol):
+    return f"{exchange}:{symbol}"
+
 
 def process_batch(batch_df, batch_id):
     start_time = time.time()
@@ -43,57 +55,67 @@ def process_batch(batch_df, batch_id):
     metrics["total_records"] += len(rows)
 
     grouped = {}
-
     for row in rows:
         event = row.asDict()
-        symbol = event["symbol"]
-        grouped.setdefault(symbol, []).append(event)
+        key = _book_key(event.get("exchange"), event.get("symbol"))
+        grouped.setdefault(key, []).append(event)
 
     print(f"\n===== BATCH {batch_id} | records={len(rows)} =====")
 
-    for symbol, events in grouped.items():
+    for key, events in grouped.items():
+        exchange, symbol = key.split(":", 1)
+        # snapshot events before updates within the same sequence so a
+        # REST-bootstrapped snapshot applies before bufferred diffs
         events = sorted(
             events,
-            key=lambda x: (x["sequence"] if x["sequence"] is not None else -1)
+            key=lambda x: (
+                x["sequence"] if x["sequence"] is not None else -1,
+                0 if x.get("is_snapshot") else 1,
+            ),
         )
 
-        if symbol not in books:
-            books[symbol] = OrderBook(symbol)
-
-        book = books[symbol]
+        if key not in books:
+            books[key] = OrderBook(symbol)
+        book = books[key]
 
         snapshot_events = [e for e in events if e["is_snapshot"]]
         update_events = [e for e in events if not e["is_snapshot"]]
 
         if snapshot_events:
-            print(f"[{symbol}] Loading snapshot with {len(snapshot_events)} levels")
+            print(f"[{key}] Loading snapshot with {len(snapshot_events)} levels")
             book.load_snapshot(snapshot_events)
 
         for event in update_events:
             book.apply_event(event)
 
             if book.needs_resync:
-                print(f"[{symbol}] Resync triggered from REST snapshot...")
+                now = time.time()
+                last = last_resync_at.get(key, 0.0)
+                if now - last < RESYNC_MIN_INTERVAL_SEC:
+                    print(f"[{key}] Resync debounced (last was {now - last:.2f}s ago)")
+                    break
+                print(f"[{key}] Resync triggered from REST snapshot...")
                 try:
-                    snapshot = load_coinbase_snapshot(symbol)
-                    book.reset_from_snapshot(snapshot)
+                    snap = load_snapshot(exchange, symbol)
+                    book.reset_from_snapshot(snap)
+                    last_resync_at[key] = now
                     metrics["total_resyncs"] += 1
-                    print(f"[{symbol}] Resync complete at sequence {book.last_sequence}")
+                    print(f"[{key}] Resync complete at sequence {book.last_sequence}")
                 except Exception as e:
-                    print(f"[{symbol}] Resync failed: {e}")
+                    print(f"[{key}] Resync failed: {e}")
                     break
 
         snap = book.snapshot()
 
         if snap["best_bid"] and snap["best_ask"]:
             if snap["best_bid"] > snap["best_ask"]:
-                print("[ERROR] Invalid book: bid > ask")
+                print(f"[ERROR] Invalid book for {key}: bid > ask")
 
-        print(f"[{symbol}] best_bid={snap['best_bid']} best_ask={snap['best_ask']} spread={snap['spread']}")
-        print(f"[{symbol}] top_bids={snap['top_bids']}")
-        print(f"[{symbol}] top_asks={snap['top_asks']}")
+        print(f"[{key}] best_bid={snap['best_bid']} best_ask={snap['best_ask']} spread={snap['spread']}")
+        print(f"[{key}] top_bids={snap['top_bids']}")
+        print(f"[{key}] top_asks={snap['top_asks']}")
         print(
-            f"[{symbol}] last_sequence={snap['last_sequence']} "
+            f"[{key}] last_sequence={snap['last_sequence']} "
             f"needs_resync={snap['needs_resync']} "
             f"gap_count={snap['gap_count']} "
             f"old_event_count={snap['old_event_count']} "
@@ -112,6 +134,7 @@ def process_batch(batch_df, batch_id):
     print(f"total_records={metrics['total_records']}")
     print(f"total_resyncs={metrics['total_resyncs']}")
     print("-------------------")
+
 
 raw_df = spark.readStream \
     .format("kafka") \
