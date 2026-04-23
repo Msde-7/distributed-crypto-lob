@@ -78,8 +78,11 @@ def validate_coinbase():
     results.append(_check(book.old_event_count == 1 and 50.0 not in book.bids,
                           "stale event rejected, old_event_count = 1"))
 
-    # Gap: jump from 1 -> 5.
-    gap = json.dumps({
+    # Sequence jumps are legal on Coinbase (subscription-wide counter), so
+    # gap detection is deliberately disabled. Resync is driven by WS reconnect
+    # which emits a fresh is_snapshot frame. Verify a 1 -> 5 jump does NOT
+    # flag the book, and a fresh snapshot correctly resets state.
+    jump = json.dumps({
         "channel": "l2_data", "sequence_num": 5,
         "events": [{
             "type": "update", "product_id": "BTC-USD", "updates": [
@@ -87,10 +90,25 @@ def validate_coinbase():
             ]
         }]
     })
-    for e in normalize_coinbase_message(gap):
+    for e in normalize_coinbase_message(jump):
         book.apply_event(e)
-    results.append(_check(book.needs_resync and book.gap_count == 1,
-                          "gap (1 -> 5) detected, needs_resync flagged"))
+    results.append(_check(not book.needs_resync and book.gap_count == 0,
+                          "sequence jump 1 -> 5 accepted (gap detection off)"))
+    results.append(_check(book.bids.get(100.5) == 99.0,
+                          "update applied after sequence jump"))
+
+    # Fresh snapshot after a simulated reconnect resets the book cleanly.
+    fresh = json.dumps({
+        "channel": "l2_data", "sequence_num": 0,
+        "events": [{"type": "snapshot", "product_id": "BTC-USD", "updates": [
+            {"side": "bid", "event_time": "t", "price_level": "200", "new_quantity": "1"},
+            {"side": "offer", "event_time": "t", "price_level": "201", "new_quantity": "1"},
+        ]}]
+    })
+    book.load_snapshot(normalize_coinbase_message(fresh))
+    results.append(_check(book.best_bid() == 200.0 and book.best_ask() == 201.0
+                          and book.last_sequence == 0,
+                          "reconnect snapshot fully replaces book and resets last_sequence"))
 
     return all(results)
 

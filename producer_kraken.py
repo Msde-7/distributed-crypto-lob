@@ -11,11 +11,13 @@ Usage:
 import json
 import os
 import sys
+import time
 
 import websocket
 from kafka import KafkaProducer
 
 from normalizer import normalize_kraken_message, reset_kraken_state
+from partitioning import partition_for
 
 
 KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")
@@ -27,6 +29,9 @@ DEFAULT_DEPTH = int(os.environ.get("KRAKEN_DEPTH", "10"))
 def _parse_symbols(argv):
     if len(argv) > 1:
         return [s.strip().upper() for s in argv[1].split(",") if s.strip()]
+    env = os.environ.get("KRAKEN_PRODUCTS", "")
+    if env.strip():
+        return [s.strip().upper() for s in env.split(",") if s.strip()]
     return ["BTC-USD"]
 
 
@@ -58,12 +63,19 @@ class KrakenProducer:
         print(f"[kraken] subscribed to book channel: {ws_syms}", flush=True)
 
     def on_message(self, ws, message):
+        ingest_ns = time.time_ns()
         try:
             events = normalize_kraken_message(message)
             if not events:
                 return
             for ev in events:
-                self.producer.send(KAFKA_TOPIC, key=ev["symbol"], value=ev)
+                ev["ingest_ns"] = ingest_ns
+                self.producer.send(
+                    KAFKA_TOPIC,
+                    key=ev["symbol"],
+                    value=ev,
+                    partition=partition_for(ev["exchange"], ev["symbol"]),
+                )
             self.producer.flush()
         except Exception as e:
             print(f"[kraken] on_message error: {e}", flush=True)
@@ -75,15 +87,17 @@ class KrakenProducer:
         print(f"[kraken] WS closed: code={code} msg={msg}", flush=True)
 
     def run(self):
-        print(f"[kraken] connecting to {KRAKEN_WS_URL}", flush=True)
-        ws = websocket.WebSocketApp(
-            KRAKEN_WS_URL,
-            on_open=self.on_open,
-            on_message=self.on_message,
-            on_error=self.on_error,
-            on_close=self.on_close,
-        )
-        ws.run_forever(ping_interval=30, ping_timeout=10)
+        while True:
+            print(f"[kraken] connecting to {KRAKEN_WS_URL}", flush=True)
+            ws = websocket.WebSocketApp(
+                KRAKEN_WS_URL,
+                on_open=self.on_open,
+                on_message=self.on_message,
+                on_error=self.on_error,
+                on_close=self.on_close,
+            )
+            ws.run_forever(ping_interval=30, ping_timeout=10)
+            time.sleep(1)
 
 
 if __name__ == "__main__":

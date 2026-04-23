@@ -1,3 +1,4 @@
+import os
 import time
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json
@@ -5,6 +6,14 @@ from pyspark.sql.types import StructType, StructField, StringType, DoubleType, B
 
 from resync import load_snapshot
 from order_book import OrderBook
+
+KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")
+KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "lob-events")
+STARTING_OFFSETS = os.environ.get("STARTING_OFFSETS", "earliest")
+# Directory for the Parquet snapshot sink. One partitioned file per batch so
+# re-processing after a failure overwrites the same path (idempotent, which
+# is what the report's exactly-once claim relies on).
+SNAPSHOT_SINK_DIR = os.environ.get("SNAPSHOT_SINK_DIR", "")
 
 spark = SparkSession.builder \
     .appName("LOBOrderBook") \
@@ -23,7 +32,31 @@ schema = StructType([
     StructField("first_sequence", LongType(), True),
     StructField("is_snapshot", BooleanType(), True),
     StructField("checksum", LongType(), True),
+    # time.time_ns() stamped at WS on_message in the producer, None on REST
+    # bootstrap snapshots (they don't represent live-feed arrivals).
+    StructField("ingest_ns", LongType(), True),
 ])
+
+
+def _percentile(sorted_vals, pct):
+    if not sorted_vals:
+        return None
+    k = (len(sorted_vals) - 1) * pct
+    lo = int(k)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (k - lo)
+
+# cap per exchange matches the depth window the feed actually streams
+EXCHANGE_MAX_DEPTH = {"kraken": 10}
+
+# ws: producer reconnects its WebSocket, Coinbase/Kraken re-emit a fresh
+#     snapshot that is time-aligned with subsequent updates (no crossed book).
+# rest: consumer fetches a REST snapshot (Binance has no WS snapshot path).
+RESYNC_STRATEGY = {
+    "coinbase": "ws",
+    "binance": "rest",
+    "kraken": "ws",
+}
 
 # one book per (exchange, symbol) so venues never get mixed
 books = {}
@@ -44,6 +77,7 @@ def _book_key(exchange, symbol):
 
 def process_batch(batch_df, batch_id):
     start_time = time.time()
+    process_ns = time.time_ns()
 
     rows = batch_df.collect()
 
@@ -55,10 +89,15 @@ def process_batch(batch_df, batch_id):
     metrics["total_records"] += len(rows)
 
     grouped = {}
+    latencies_ns = []
     for row in rows:
         event = row.asDict()
         key = _book_key(event.get("exchange"), event.get("symbol"))
         grouped.setdefault(key, []).append(event)
+        ing = event.get("ingest_ns")
+        if ing is not None:
+            latencies_ns.append(process_ns - ing)
+    snapshot_rows = []
 
     print(f"\n===== BATCH {batch_id} | records={len(rows)} =====")
 
@@ -75,7 +114,7 @@ def process_batch(batch_df, batch_id):
         )
 
         if key not in books:
-            books[key] = OrderBook(symbol)
+            books[key] = OrderBook(symbol, max_depth=EXCHANGE_MAX_DEPTH.get(exchange))
         book = books[key]
 
         snapshot_events = [e for e in events if e["is_snapshot"]]
@@ -89,6 +128,14 @@ def process_batch(batch_df, batch_id):
             book.apply_event(event)
 
             if book.needs_resync:
+                strategy = RESYNC_STRATEGY.get(exchange, "rest")
+                if strategy == "ws":
+                    # Producer will reconnect its WS; the fresh snapshot will
+                    # flow through Kafka as is_snapshot=True events and
+                    # load_snapshot will reset the book. Just stop applying
+                    # further updates in this batch.
+                    print(f"[{key}] Gap detected, waiting for producer WS-snapshot")
+                    break
                 now = time.time()
                 last = last_resync_at.get(key, 0.0)
                 if now - last < RESYNC_MIN_INTERVAL_SEC:
@@ -121,15 +168,57 @@ def process_batch(batch_df, batch_id):
             f"old_event_count={snap['old_event_count']} "
             f"duplicate_count={snap['duplicate_count']}"
         )
+        snapshot_rows.append({
+            "batch_id": batch_id,
+            "exchange": exchange,
+            "symbol": symbol,
+            "best_bid": snap["best_bid"],
+            "best_ask": snap["best_ask"],
+            "spread": snap["spread"],
+            "last_sequence": snap["last_sequence"],
+            "gap_count": snap["gap_count"],
+            "ts_ns": process_ns,
+        })
 
     elapsed = time.time() - start_time
     records_per_sec = len(rows) / elapsed if elapsed > 0 else 0
+
+    # Idempotent per-batch Parquet write. mode=overwrite with a batch-scoped
+    # path means retries on the same batch_id overwrite rather than append,
+    # which gives exactly-once semantics at the sink.
+    if SNAPSHOT_SINK_DIR and snapshot_rows:
+        try:
+            out = spark.createDataFrame(snapshot_rows)
+            (out.write
+                .mode("overwrite")
+                .parquet(f"{SNAPSHOT_SINK_DIR}/batch_id={batch_id}"))
+        except Exception as e:
+            print(f"[sink] parquet write failed for batch {batch_id}: {e}")
+
+    # p50/p95/p99 end-to-end latency: WS arrival at producer -> batch handling
+    # here in Spark. ingest_ns is stamped once per WS frame, so same-tick events
+    # share a measurement. Skips REST bootstrap snapshots which have None.
+    if latencies_ns:
+        latencies_ns.sort()
+        p50_ms = _percentile(latencies_ns, 0.50) / 1e6
+        p95_ms = _percentile(latencies_ns, 0.95) / 1e6
+        p99_ms = _percentile(latencies_ns, 0.99) / 1e6
+        max_ms = latencies_ns[-1] / 1e6
+        lat_n = len(latencies_ns)
+    else:
+        p50_ms = p95_ms = p99_ms = max_ms = float("nan")
+        lat_n = 0
 
     print("\n----- METRICS -----")
     print(f"batch_id={batch_id}")
     print(f"batch_records={len(rows)}")
     print(f"batch_time_sec={elapsed:.4f}")
     print(f"batch_records_per_sec={records_per_sec:.2f}")
+    print(f"latency_p50_ms={p50_ms:.2f}")
+    print(f"latency_p95_ms={p95_ms:.2f}")
+    print(f"latency_p99_ms={p99_ms:.2f}")
+    print(f"latency_max_ms={max_ms:.2f}")
+    print(f"latency_n={lat_n}")
     print(f"total_batches={metrics['total_batches']}")
     print(f"total_records={metrics['total_records']}")
     print(f"total_resyncs={metrics['total_resyncs']}")
@@ -138,9 +227,9 @@ def process_batch(batch_df, batch_id):
 
 raw_df = spark.readStream \
     .format("kafka") \
-    .option("kafka.bootstrap.servers", "localhost:9092") \
-    .option("subscribe", "lob-events") \
-    .option("startingOffsets", "latest") \
+    .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP) \
+    .option("subscribe", KAFKA_TOPIC) \
+    .option("startingOffsets", STARTING_OFFSETS) \
     .option("maxOffsetsPerTrigger", 50000) \
     .load()
 

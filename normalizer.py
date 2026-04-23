@@ -31,7 +31,11 @@ def normalize_coinbase_message(message):
                 "quantity": float(upd["new_quantity"]),
                 "event_time": upd.get("event_time"),
                 "sequence": sequence,
-                "first_sequence": sequence,
+                # first_sequence=None disables gap detection for Coinbase. The
+                # sequence_num is subscription-wide, not per-channel, so it
+                # skips non-l2_data frames and looks gappy even when nothing
+                # is actually missing. We trust WS ordering + reconnect here.
+                "first_sequence": None,
                 "is_snapshot": is_snapshot,
                 "checksum": None,
             })
@@ -118,11 +122,16 @@ def normalize_kraken_message(message):
         checksum = entry.get("checksum")
         is_snapshot = frame_type == "snapshot"
 
+        groups = [("bid", entry.get("bids", [])), ("ask", entry.get("asks", []))]
+        flat = [(side, row) for side, rows in groups for row in rows]
+        if not flat:
+            continue
+
+        # bump counter only when we actually emit events, otherwise an empty
+        # Kraken heartbeat-style frame would leave a phantom sequence hole
         counter = _kraken_counters.get(symbol, -1) + 1
         _kraken_counters[symbol] = counter
 
-        groups = [("bid", entry.get("bids", [])), ("ask", entry.get("asks", []))]
-        flat = [(side, row) for side, rows in groups for row in rows]
         for idx, (side, row) in enumerate(flat):
             price = float(row["price"])
             qty = float(row["qty"])
@@ -135,9 +144,11 @@ def normalize_kraken_message(message):
                 "quantity": qty,
                 "event_time": timestamp,
                 "sequence": counter,
-                "first_sequence": counter,
+                # first_sequence=None: Kraken has no native sequence, our local
+                # counter is not a reliable gap signal, so trust ordering and
+                # rely on CRC32 (future work) for integrity checking
+                "first_sequence": None,
                 "is_snapshot": is_snapshot,
-                # checksum only on the last event of the frame
                 "checksum": checksum if is_last else None,
             })
     return out

@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+.env.*
+*.log
+__pycache__
+*.pyc
+spark_run.log
+producer_*.log
+kafka.log
+Dockerfile*
+docker-compose.yml
+.dockerignore

@@ -19,6 +19,7 @@ import websocket
 from kafka import KafkaProducer
 
 from normalizer import normalize_binance_message
+from partitioning import partition_for
 from resync import load_binance_snapshot
 
 
@@ -32,6 +33,9 @@ BINANCE_WS_BASE = os.environ.get("BINANCE_WS_BASE", "wss://stream.binance.us:944
 def _parse_symbols(argv):
     if len(argv) > 1:
         return [s.strip().upper() for s in argv[1].split(",") if s.strip()]
+    env = os.environ.get("BINANCE_PRODUCTS", "")
+    if env.strip():
+        return [s.strip().upper() for s in env.split(",") if s.strip()]
     return ["BTC-USDT"]
 
 
@@ -55,7 +59,12 @@ class BinanceProducer:
         self.snapshot_thread_started = False
 
     def _publish(self, event):
-        self.producer.send(KAFKA_TOPIC, key=event["symbol"], value=event)
+        self.producer.send(
+            KAFKA_TOPIC,
+            key=event["symbol"],
+            value=event,
+            partition=partition_for(event["exchange"], event["symbol"]),
+        )
 
     def _bootstrap_symbol(self, symbol):
         try:
@@ -116,10 +125,13 @@ class BinanceProducer:
         threading.Timer(0.5, self._start_bootstrap_once).start()
 
     def on_message(self, ws, message):
+        ingest_ns = time.time_ns()
         try:
             events = normalize_binance_message(message, symbol_map=self.symbol_map)
             if not events:
                 return
+            for ev in events:
+                ev["ingest_ns"] = ingest_ns
 
             symbol = events[0]["symbol"]
             if symbol not in self.buffered:

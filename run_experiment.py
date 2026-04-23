@@ -22,6 +22,38 @@ ROOT = Path(__file__).parent.resolve()
 SPARK_LOG = ROOT / "spark_run.log"
 KAFKA_LOG = ROOT / "kafka.log"
 
+KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "lob-events")
+KAFKA_PARTITIONS = int(os.environ.get("KAFKA_PARTITIONS", "8"))
+KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")
+
+
+def _build_all_book_keys():
+    """Cross-product of EXCHANGES x each exchange's product list.
+
+    Feeds into the shared partitioner so every exchange:symbol pair gets a
+    deterministic round-robin partition slot. Without this, murmur2 on a
+    small key set leaves partitions empty and the scaling sweep flattens.
+    """
+    sym_lists = {
+        "coinbase": os.environ.get("COINBASE_PRODUCTS", "BTC-USD"),
+        "binance": os.environ.get("BINANCE_PRODUCTS", "BTC-USDT"),
+        "kraken": os.environ.get("KRAKEN_PRODUCTS", "BTC-USD"),
+    }
+    keys = []
+    for ex in os.environ.get("EXCHANGES", "coinbase").split(","):
+        ex = ex.strip().lower()
+        if not ex:
+            continue
+        for sym in sym_lists.get(ex, "").split(","):
+            sym = sym.strip().upper()
+            if sym:
+                keys.append(f"{ex}:{sym}")
+    return keys
+
+
+ALL_BOOK_KEYS = _build_all_book_keys()
+os.environ["ALL_BOOK_KEYS"] = ",".join(ALL_BOOK_KEYS)
+
 # Which producers to launch. Comma-separated, any subset of:
 #   coinbase, binance, kraken
 # Each has its own producer script and its own log file.
@@ -68,6 +100,44 @@ def wait_for_port(host, port, label, max_wait=90):
         time.sleep(2)
     print(f"[FATAL] {label} did not open port {port} within {max_wait}s")
     return False
+
+
+def ensure_topic():
+    """Create KAFKA_TOPIC with KAFKA_PARTITIONS if it does not already exist.
+
+    Parallelism in Spark Structured Streaming on Kafka is capped by partition
+    count, not worker count. Without this the 2-to-8-worker scaling sweep
+    would flatten at 1x because there's only one unit of work.
+    """
+    from kafka.admin import KafkaAdminClient, NewTopic
+    from kafka.errors import TopicAlreadyExistsError
+    try:
+        admin = KafkaAdminClient(bootstrap_servers=KAFKA_BOOTSTRAP)
+    except Exception as e:
+        print(f"[topic] admin connect failed: {e}")
+        return
+    try:
+        existing = admin.list_topics()
+        if KAFKA_TOPIC in existing:
+            desc = admin.describe_topics([KAFKA_TOPIC])
+            n = len(desc[0]["partitions"]) if desc else "?"
+            print(f"[topic] {KAFKA_TOPIC} exists with {n} partitions")
+            return
+        admin.create_topics([NewTopic(
+            name=KAFKA_TOPIC,
+            num_partitions=KAFKA_PARTITIONS,
+            replication_factor=1,
+        )])
+        print(f"[topic] created {KAFKA_TOPIC} partitions={KAFKA_PARTITIONS}")
+    except TopicAlreadyExistsError:
+        print(f"[topic] {KAFKA_TOPIC} already exists")
+    except Exception as e:
+        print(f"[topic] create failed: {e}")
+    finally:
+        try:
+            admin.close()
+        except Exception:
+            pass
 
 
 def start_kafka():
@@ -162,6 +232,9 @@ def parse_log():
     rps = [float(x) for x in re.findall(r"batch_records_per_sec=([\d.]+)", text)]
     secs = [float(x) for x in re.findall(r"batch_time_sec=([\d.]+)", text)]
     recs = [int(x) for x in re.findall(r"batch_records=(\d+)", text)]
+    p50 = [float(x) for x in re.findall(r"latency_p50_ms=([\d.]+)", text)]
+    p95 = [float(x) for x in re.findall(r"latency_p95_ms=([\d.]+)", text)]
+    p99 = [float(x) for x in re.findall(r"latency_p99_ms=([\d.]+)", text)]
     tb = re.findall(r"total_batches=(\d+)", text)
     tr = re.findall(r"total_records=(\d+)", text)
     trs = re.findall(r"total_resyncs=(\d+)", text)
@@ -193,6 +266,11 @@ def parse_log():
     print(f"mean ms/batch:         {mean_ms:.2f}")
     print(f"peak events/sec:       {peak_rps:.2f}")
     print(f"peak batch size:       {peak_batch}")
+    if p50:
+        print(f"latency p50 (ms):      {mean(p50):.2f}")
+        print(f"latency p95 (ms):      {mean(p95):.2f}")
+        print(f"latency p99 (ms):      {mean(p99):.2f}")
+        print(f"latency p99 peak (ms): {max(p99):.2f}")
     print("-" * 60)
     print("last quote per book (compare one to a REST call):")
     for key, (bid, ask, spread) in last_quotes.items():
@@ -208,8 +286,9 @@ def parse_log():
 
 
 def main():
-    print(f"[run] exchanges={EXCHANGES} duration={DURATION}s")
+    print(f"[run] exchanges={EXCHANGES} duration={DURATION}s topic={KAFKA_TOPIC} partitions={KAFKA_PARTITIONS}")
     kafka_proc = start_kafka()
+    ensure_topic()
     producers = start_producers()
     spark = start_spark()
 
