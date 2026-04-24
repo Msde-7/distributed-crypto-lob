@@ -12,6 +12,15 @@ p50_vals = [float(x) for x in re.findall(r"latency_p50_ms=([\d.]+)", text)]
 p95_vals = [float(x) for x in re.findall(r"latency_p95_ms=([\d.]+)", text)]
 p99_vals = [float(x) for x in re.findall(r"latency_p99_ms=([\d.]+)", text)]
 
+# Steady-state mask: a batch is "caught up" when its size is below the
+# maxOffsetsPerTrigger cap. Backlog-drain batches hit the cap and their
+# latency reflects how long events sat in Kafka, not producer-to-book latency.
+CAP = 50000
+steady = [i for i, n in enumerate(rec_vals) if n < CAP]
+p50_steady = [p50_vals[i] for i in steady if i < len(p50_vals)]
+p95_steady = [p95_vals[i] for i in steady if i < len(p95_vals)]
+p99_steady = [p99_vals[i] for i in steady if i < len(p99_vals)]
+
 total_batches = re.findall(r"total_batches=(\d+)", text)
 total_records = re.findall(r"total_records=(\d+)", text)
 total_resyncs = re.findall(r"total_resyncs=(\d+)", text)
@@ -43,10 +52,13 @@ print(f"mean ms/batch:         {mean_ms:.2f}")
 print(f"peak events/sec:       {peak_rps:.2f}")
 print(f"peak batch size:       {peak_batch}")
 if p50_vals:
-    print(f"latency p50 (ms):      {mean(p50_vals):.2f}")
+    print(f"latency p50 (ms):      {mean(p50_vals):.2f}   [all batches]")
     print(f"latency p95 (ms):      {mean(p95_vals):.2f}")
     print(f"latency p99 (ms):      {mean(p99_vals):.2f}")
-    print(f"latency p99 peak (ms): {max(p99_vals):.2f}")
+if p50_steady:
+    print(f"latency p50 steady:    {mean(p50_steady):.2f} ms   [{len(p50_steady)} caught-up batches]")
+    print(f"latency p95 steady:    {mean(p95_steady):.2f} ms")
+    print(f"latency p99 steady:    {mean(p99_steady):.2f} ms")
 print("-" * 60)
 print("last quote per book (compare one of these to a REST call):")
 for key, (bid, ask, spread) in last_quotes.items():

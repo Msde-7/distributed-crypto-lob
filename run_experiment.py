@@ -266,11 +266,19 @@ def parse_log():
     print(f"mean ms/batch:         {mean_ms:.2f}")
     print(f"peak events/sec:       {peak_rps:.2f}")
     print(f"peak batch size:       {peak_batch}")
+    CAP = 50000
+    steady_idx = [i for i, n in enumerate(recs) if n < CAP]
+    p50_steady = [p50[i] for i in steady_idx if i < len(p50)]
+    p95_steady = [p95[i] for i in steady_idx if i < len(p95)]
+    p99_steady = [p99[i] for i in steady_idx if i < len(p99)]
     if p50:
-        print(f"latency p50 (ms):      {mean(p50):.2f}")
+        print(f"latency p50 (ms):      {mean(p50):.2f}   [all batches]")
         print(f"latency p95 (ms):      {mean(p95):.2f}")
         print(f"latency p99 (ms):      {mean(p99):.2f}")
-        print(f"latency p99 peak (ms): {max(p99):.2f}")
+    if p50_steady:
+        print(f"latency p50 steady:    {mean(p50_steady):.2f} ms   [{len(p50_steady)} caught-up batches]")
+        print(f"latency p95 steady:    {mean(p95_steady):.2f} ms")
+        print(f"latency p99 steady:    {mean(p99_steady):.2f} ms")
     print("-" * 60)
     print("last quote per book (compare one to a REST call):")
     for key, (bid, ask, spread) in last_quotes.items():
