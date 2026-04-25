@@ -1,18 +1,14 @@
 #!/bin/bash
 # Run on driver01.
-# Clone the repo, install Python deps for the producers, run a 60s smoke test.
+# Repo files are SFTP'd in by jetstream/scp_repo.py. This script just installs
+# Python deps, validates the adapters, and creates the Kafka topic.
 
 set -euo pipefail
 
-REPO=https://github.com/Msde-7/distributed-crypto-lob.git
 KAFKA_IP=10.4.36.193
 SPARK_MASTER=spark://10.4.36.243:7077
 
-if [ ! -d ~/distributed-crypto-lob ]; then
-    git clone "$REPO" ~/distributed-crypto-lob
-fi
 cd ~/distributed-crypto-lob
-git pull --ff-only || true
 
 if ! command -v pip3 >/dev/null; then
     sudo DEBIAN_FRONTEND=noninteractive apt-get -y -qq install python3-pip
@@ -20,10 +16,10 @@ fi
 pip3 install --break-system-packages --quiet \
     kafka-python==2.0.2 websocket-client==1.8.0 requests==2.32.3
 
-echo "==> verifying adapter tests pass"
+echo "==> verifying adapters offline"
 python3 validate_adapters.py | tail -5
 
-echo "==> creating topic with 8 partitions"
+echo "==> creating topic with 8 partitions on ${KAFKA_IP}:9092"
 docker run --rm --network host apache/kafka:3.9.0 \
     /opt/kafka/bin/kafka-topics.sh --bootstrap-server ${KAFKA_IP}:9092 \
     --create --if-not-exists --topic lob-events --partitions 8 --replication-factor 1 \
@@ -33,5 +29,9 @@ docker run --rm --network host apache/kafka:3.9.0 \
     /opt/kafka/bin/kafka-topics.sh --bootstrap-server ${KAFKA_IP}:9092 \
     --describe --topic lob-events 2>&1 | head -2
 
-echo "==> environment ready. spark master: ${SPARK_MASTER}"
-echo "==> launch a smoke run separately with: python3 run_experiment.py 60"
+echo "==> spark cluster status"
+docker run --rm --network host apache/spark:3.5.3-python3 bash -c "
+echo 'master: ${SPARK_MASTER}'
+"
+
+echo "==> done. environment ready on $(hostname)"
