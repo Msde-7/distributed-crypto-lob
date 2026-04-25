@@ -1,14 +1,18 @@
 FROM apache/spark:3.5.3-python3
 
+# Install pip deps as root, then drop back to the spark user so files we
+# write to NFS land with the same uid (185) as the executor containers.
 USER root
 WORKDIR /app
 
-RUN pip install --no-cache-dir kafka-python==2.0.2 websocket-client==1.8.0 requests==2.32.3
+RUN pip install --no-cache-dir requests==2.32.3 \
+ && chown -R spark:spark /app
 
-COPY normalizer.py order_book.py resync.py partitioning.py ./
-COPY spark_order_book.py ./
+COPY --chown=spark:spark normalizer.py order_book.py resync.py partitioning.py ./
+COPY --chown=spark:spark spark_order_book.py ./
 
 ENV PYTHONUNBUFFERED=1
+USER spark
 
 # Pull the Kafka connector at runtime; cached after first run per image.
 CMD ["/opt/spark/bin/spark-submit", \

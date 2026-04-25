@@ -17,6 +17,7 @@ docker rm -f spark-worker 2>/dev/null || true
 
 docker run -d --name spark-worker --restart unless-stopped \
     --network host \
+    -v /data:/data \
     -e SPARK_NO_DAEMONIZE=1 \
     apache/spark:3.5.3-python3 \
     /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker \

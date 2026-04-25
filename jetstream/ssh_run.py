@@ -1,4 +1,8 @@
-"""Tiny SSH harness for running scripts on the four Jetstream2 VMs.
+"""SSH harness for the four (now ten) Jetstream2 VMs.
+
+Hosts can be either directly reachable (public IP) or via a bastion. When
+`via` is set, we open a direct-tcpip channel through the bastion's transport
+and tunnel SSH over it (the paramiko equivalent of ssh -J).
 
 Usage:
     python ssh_run.py <vm-name> <local-script-path>
@@ -13,8 +17,6 @@ import paramiko
 
 
 def _load_dotenv():
-    """Load .env (gitignored) into os.environ if present. Tiny inline parser
-    so we don't depend on python-dotenv."""
     env_path = Path(__file__).resolve().parent.parent / ".env"
     if not env_path.exists():
         return
@@ -23,9 +25,7 @@ def _load_dotenv():
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, _, v = line.partition("=")
-        k = k.strip()
-        v = v.strip().strip('"').strip("'")
-        os.environ.setdefault(k, v)
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
 _load_dotenv()
@@ -35,43 +35,71 @@ KEY_PASSPHRASE = os.environ.get("JETSTREAM_KEY_PASSPHRASE")
 if not KEY_PASSPHRASE:
     sys.exit("JETSTREAM_KEY_PASSPHRASE not set. Add it to .env (gitignored).")
 
+
+# ip = the address used to reach the host
+# via = name of a bastion host in HOSTS (must be reachable directly), or None
 HOSTS = {
-    "kafka01": "149.165.174.26",
-    "driver01": "149.165.169.161",
-    "exec01": "149.165.175.79",
-    "exec02": "149.165.172.58",
+    "kafka01":  {"ip": "149.165.174.26",  "via": None},
+    "driver01": {"ip": "149.165.169.161", "via": None},
+    "exec01":   {"ip": "149.165.175.79",  "via": None},
+    "exec02":   {"ip": "149.165.172.58",  "via": None},
+    # Internal-only executors, reached through driver01 as a bastion
+    "exec03":   {"ip": "10.4.36.226",     "via": "driver01"},
+    "exec04":   {"ip": "10.4.36.110",     "via": "driver01"},
+    "exec05":   {"ip": "10.4.36.20",      "via": "driver01"},
+    "exec06":   {"ip": "10.4.36.219",     "via": "driver01"},
+    "exec07":   {"ip": "10.4.36.69",      "via": "driver01"},
+    "exec08":   {"ip": "10.4.36.92",      "via": "driver01"},
 }
 
 ALL_VMS = list(HOSTS.keys())
 
 
-def _client(ip):
-    key = paramiko.RSAKey.from_private_key_file(KEY_PATH, password=KEY_PASSPHRASE)
+def _new_key():
+    return paramiko.RSAKey.from_private_key_file(KEY_PATH, password=KEY_PASSPHRASE)
+
+
+def _connect(vm_name):
+    info = HOSTS[vm_name]
+    via = info["via"]
+    if via is None:
+        c = paramiko.SSHClient()
+        c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        c.connect(info["ip"], username="exouser", pkey=_new_key(),
+                  timeout=30, allow_agent=False, look_for_keys=False)
+        return c, None  # no bastion to keep alive
+    # Open SSH to bastion, tunnel a TCP channel to the target's :22, run SSH over it.
+    bastion = _connect(via)[0]
+    bastion_t = bastion.get_transport()
+    chan = bastion_t.open_channel("direct-tcpip", (info["ip"], 22), ("127.0.0.1", 0))
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    c.connect(ip, username="exouser", pkey=key, timeout=30,
-              allow_agent=False, look_for_keys=False)
-    return c
+    c.connect(info["ip"], username="exouser", pkey=_new_key(),
+              sock=chan, timeout=30, allow_agent=False, look_for_keys=False)
+    return c, bastion
 
 
 def run_script(vm_name, script_text, label=None):
-    ip = HOSTS[vm_name]
     label = label or vm_name
-    print(f"\n========== {label} ({ip}) ==========", flush=True)
-    c = _client(ip)
-    stdin, stdout, stderr = c.exec_command("bash -s", get_pty=False)
-    stdin.write(script_text)
-    stdin.channel.shutdown_write()
-    out = stdout.read().decode("utf-8", "replace")
-    err = stderr.read().decode("utf-8", "replace")
-    rc = stdout.channel.recv_exit_status()
-    if out.strip():
-        print(out, flush=True)
-    if err.strip():
-        print(f"[stderr]\n{err}", flush=True)
-    print(f"[exit {rc}]", flush=True)
-    c.close()
-    return rc
+    print(f"\n========== {label} ({HOSTS[vm_name]['ip']}) ==========", flush=True)
+    c, bastion = _connect(vm_name)
+    try:
+        stdin, stdout, stderr = c.exec_command("bash -s", get_pty=False)
+        stdin.write(script_text)
+        stdin.channel.shutdown_write()
+        out = stdout.read().decode("utf-8", "replace")
+        err = stderr.read().decode("utf-8", "replace")
+        rc = stdout.channel.recv_exit_status()
+        if out.strip():
+            print(out, flush=True)
+        if err.strip():
+            print(f"[stderr]\n{err}", flush=True)
+        print(f"[exit {rc}]", flush=True)
+        return rc
+    finally:
+        c.close()
+        if bastion is not None:
+            bastion.close()
 
 
 def run_cmd(vm_name, cmd):

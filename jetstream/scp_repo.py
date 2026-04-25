@@ -18,7 +18,8 @@ def push(vm_name, dest="/home/exouser/distributed-crypto-lob"):
         "validate_adapters.py", "probe_live_ws.py", "requirements.txt",
         "Dockerfile.producer", "Dockerfile.spark", "docker-compose.yml",
     ]
-    ip = HOSTS[vm_name]
+    info = HOSTS[vm_name]
+    ip = info["ip"] if isinstance(info, dict) else info
     key = paramiko.RSAKey.from_private_key_file(KEY_PATH, password=KEY_PASSPHRASE)
     t = paramiko.Transport((ip, 22))
     t.connect(username="exouser", pkey=key)
