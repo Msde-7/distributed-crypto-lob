@@ -1,4 +1,5 @@
-"""Push the repo's runtime files to a VM via SFTP. Skips logs and .env."""
+"""sftp the runtime files to a vm. avoids needing github creds on the box
+since the repo is private."""
 import os
 import sys
 from pathlib import Path
@@ -18,13 +19,14 @@ def push(vm_name, dest="/home/exouser/distributed-crypto-lob"):
         "validate_adapters.py", "probe_live_ws.py", "requirements.txt",
         "Dockerfile.producer", "Dockerfile.spark", "docker-compose.yml",
     ]
-    ip = HOSTS[vm_name]
+    info = HOSTS[vm_name]
+    ip = info["ip"] if isinstance(info, dict) else info
     key = paramiko.RSAKey.from_private_key_file(KEY_PATH, password=KEY_PASSPHRASE)
     t = paramiko.Transport((ip, 22))
     t.connect(username="exouser", pkey=key)
     sftp = paramiko.SFTPClient.from_transport(t)
 
-    # mkdir -p
+    # mkdir -p the dest
     parts = dest.strip("/").split("/")
     cur = ""
     for p in parts:
@@ -38,6 +40,7 @@ def push(vm_name, dest="/home/exouser/distributed-crypto-lob"):
     for f in files:
         local = root / f
         if not local.exists():
+            # supress missing-file errors, we expect a few of the optional ones
             print(f"  skip (missing): {f}")
             continue
         sftp.put(str(local), f"{dest}/{f}")

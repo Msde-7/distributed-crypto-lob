@@ -1,9 +1,6 @@
 #!/bin/bash
-# Run on driver01.
-# 90-second smoke test against the actual standalone cluster.
-# - launches 3 producers (Coinbase, Binance, Kraken) on driver01 in background
-# - submits the Spark app to spark://10.4.36.243:7077 (uses both workers)
-# - waits, then stops everything and dumps the metrics
+# 90s end-to-end smoke. resets topic, fires producers, submits spark, dumps
+# the metrics. run on driver01.
 
 set -uo pipefail
 
@@ -12,6 +9,35 @@ SPARK_MASTER=spark://10.4.36.243:7077
 DURATION=90
 
 cd ~/distributed-crypto-lob
+
+# blow away the topic so we get clean sequence numbers accross runs (otherwise
+# the consumer ends up applying old replays from previous experiments)
+echo "==> resetting topic"
+docker run --rm --network host apache/kafka:3.9.0 \
+    /opt/kafka/bin/kafka-topics.sh --bootstrap-server ${KAFKA_IP:-10.4.36.193}:9092 \
+    --delete --topic lob-events 2>/dev/null || true
+sleep 2
+docker run --rm --network host apache/kafka:3.9.0 \
+    /opt/kafka/bin/kafka-topics.sh --bootstrap-server ${KAFKA_IP:-10.4.36.193}:9092 \
+    --create --if-not-exists --topic lob-events --partitions 8 --replication-factor 1 \
+    2>&1 | tail -2
+
+# wipe parquet too, dont want a consistant view of state from prior runs
+sudo rm -rf /data/lob_snapshots/* 2>/dev/null || true
+
+# build the spark image once (caches across runs)
+if ! docker image inspect lob-spark:latest >/dev/null 2>&1; then
+    echo "==> building lob-spark image"
+    docker build -t lob-spark:latest -f Dockerfile.spark . 2>&1 | tail -5
+else
+    echo "==> lob-spark image already built"
+fi
+
+# kafka-python 2.0.2 is broken on python 3.12, kafka-python-ng has the fix
+pip3 uninstall --break-system-packages -y kafka-python kafka-python-ng >/dev/null 2>&1 || true
+pip3 install --break-system-packages --quiet --force-reinstall \
+    'kafka-python-ng==2.2.3' websocket-client requests
+python3 -c "from kafka import KafkaProducer; print('host kafka client ok')"
 
 export KAFKA_BOOTSTRAP=${KAFKA_IP}:9092
 export KAFKA_TOPIC=lob-events
@@ -22,12 +48,11 @@ export KRAKEN_PRODUCTS=BTC-USD,ETH-USD,SOL-USD,LTC-USD
 export KAFKA_PARTITIONS=8
 export STARTING_OFFSETS=earliest
 export SNAPSHOT_SINK_DIR=/data/lob_snapshots
-# Build ALL_BOOK_KEYS so the partitioner is consistent across producers
 export ALL_BOOK_KEYS="coinbase:BTC-USD,coinbase:ETH-USD,coinbase:SOL-USD,coinbase:LTC-USD,binance:BTC-USDT,binance:ETH-USDT,binance:SOL-USDT,binance:LTC-USDT,kraken:BTC-USD,kraken:ETH-USD,kraken:SOL-USD,kraken:LTC-USD"
 
 mkdir -p logs
 
-echo "==> launching 3 producers in background"
+echo "==> launching 3 producers"
 nohup python3 -u producer_stream.py  > logs/producer_coinbase.log 2>&1 &
 echo $! > logs/coinbase.pid
 nohup python3 -u producer_binance.py > logs/producer_binance.log 2>&1 &
@@ -35,23 +60,27 @@ echo $! > logs/binance.pid
 nohup python3 -u producer_kraken.py  > logs/producer_kraken.log  2>&1 &
 echo $! > logs/kraken.pid
 
-sleep 3
-echo "==> producer pids: coinbase=$(cat logs/coinbase.pid) binance=$(cat logs/binance.pid) kraken=$(cat logs/kraken.pid)"
+sleep 5
+echo "==> producer health check"
+for f in logs/producer_*.log; do
+    echo "--- $f ---"
+    head -3 "$f" 2>&1
+done
 
-echo "==> submitting spark job to ${SPARK_MASTER}"
+echo "==> submitting spark job"
 docker rm -f spark-app 2>/dev/null || true
 docker run -d --name spark-app --network host \
-    -v ~/distributed-crypto-lob:/app \
     -v /data:/data \
     -e KAFKA_BOOTSTRAP=${KAFKA_BOOTSTRAP} \
     -e KAFKA_TOPIC=${KAFKA_TOPIC} \
     -e STARTING_OFFSETS=${STARTING_OFFSETS} \
     -e SNAPSHOT_SINK_DIR=${SNAPSHOT_SINK_DIR} \
-    apache/spark:3.5.3-python3 \
-    /opt/spark/bin/spark-submit \
+    --entrypoint /opt/spark/bin/spark-submit \
+    lob-spark:latest \
         --master ${SPARK_MASTER} \
         --deploy-mode client \
         --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3 \
+        --conf spark.jars.ivy=/tmp/.ivy2 \
         --conf spark.executor.memory=2g \
         --conf spark.executor.cores=2 \
         --conf spark.driver.host=10.4.36.243 \
@@ -66,18 +95,19 @@ for pidf in logs/coinbase.pid logs/binance.pid logs/kraken.pid; do
     kill $pid 2>/dev/null || true
 done
 sleep 2
-
-echo "==> stopping spark app"
 docker stop spark-app >/dev/null 2>&1 || true
 
+echo
 echo "==> producer summary"
 for f in logs/producer_*.log; do
-    echo "--- $f ---"
+    echo "--- $f (last 5) ---"
     tail -5 "$f"
 done
 
-echo "==> spark app summary (last 40 lines)"
-docker logs --tail 40 spark-app 2>&1 | head -40
+echo
+echo "==> spark app: BATCH/metrics/errors lines"
+docker logs spark-app 2>&1 | grep -E '===== BATCH|latency_p|total_records=|gap_count=|Loading snapshot|ERROR|Traceback' | tail -40
 
-echo "==> parquet output"
-ls -la /data/lob_snapshots/ 2>/dev/null | head -10
+echo
+echo "==> parquet output dirs"
+ls /data/lob_snapshots/ 2>/dev/null | head -10

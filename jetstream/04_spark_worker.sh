@@ -1,8 +1,8 @@
 #!/bin/bash
-# Run on each executor (exec01, exec02).
-# Spark Standalone worker that joins the master at 10.4.36.243:7077.
-# - host networking so the worker registers its real IP
-# - SPARK_WORKER_CORES capped to 2 (matches m3.small flavor)
+# spawns a spark standalone worker on this box. host networking so the worker
+# registers its real ip not the docker bridge one. /data is the NFS mount and
+# has to be visible inside the container, otherwise parquet writes fail (this
+# occured to me a few times before adding the bind mount).
 
 set -euo pipefail
 
@@ -17,6 +17,7 @@ docker rm -f spark-worker 2>/dev/null || true
 
 docker run -d --name spark-worker --restart unless-stopped \
     --network host \
+    -v /data:/data \
     -e SPARK_NO_DAEMONIZE=1 \
     apache/spark:3.5.3-python3 \
     /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker \
