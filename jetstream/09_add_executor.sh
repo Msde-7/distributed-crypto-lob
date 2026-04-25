@@ -26,19 +26,6 @@ sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/
 sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
 # the cloud-init sshd_config drop-in overrides the main config which is wierd
 # but normal on jetstream2 ubuntu24 images, patch both
-[ -f /etc/ssh/sshd_config.d/50-cloud-init.conf ] && \
-  sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config.d/50-cloud-init.conf
-sudo systemctl restart ssh
-sudo systemctl enable --now fail2ban >/dev/null 2>&1 || true
-sudo ufw default deny incoming >/dev/null
-sudo ufw default allow outgoing >/dev/null
-sudo ufw allow ssh >/dev/null
-sudo ufw allow from 10.4.36.0/24 >/dev/null
-sudo ufw --force enable >/dev/null
-
-# nfs mount
-echo
-echo "==> mount driver01:/data via NFS"
 sudo mkdir -p /data
 sudo umount /data 2>/dev/null || true
 sudo mount -t nfs ${DRIVER_IP}:/data /data

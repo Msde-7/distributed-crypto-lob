@@ -11,17 +11,15 @@ what we want out of this:
 import os
 import sys
 import time
-from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
-from ssh_run import run_script, run_cmd  # noqa
+from ssh_run import run_script  # noqa
 
 
 KILL_AT = 60
 RESTORE_AT = 120
 TOTAL = 180
 KILL_TARGET = "exec01"
-WORKER_INTERNAL_IP = "10.4.36.131"
 
 
 SETUP_SCRIPT = """

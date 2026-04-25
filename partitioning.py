@@ -69,7 +69,3 @@ def partition_for(exchange, symbol):
     """Return a fixed partition for (exchange, symbol), or None for default."""
     key = f"{exchange}:{symbol}"
     return _MAP.get(key)
-
-
-def describe():
-    return dict(_MAP), _NUM_PARTITIONS
