@@ -2,8 +2,7 @@
 
 sequence is per-exchange and not cross-comparable: coinbase = global Exchange
 sequence (NOT the ws level2 sequence_num namespace), binance = lastUpdateId
-(same namespace as ws diff u), kraken = None (CRC is the real integrity signal,
-not implemented in time for the project report).
+(same namespace as ws diff u), kraken = None (CRC is not implemented in time for the project report).
 """
 import os
 

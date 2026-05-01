@@ -6,11 +6,11 @@ FROM apache/spark:3.5.3-python3
 USER root
 WORKDIR /app
 
-RUN pip install --no-cache-dir requests==2.32.3 pandas==2.0.3 pyarrow==14.0.2 \
+RUN pip install --no-cache-dir requests==2.32.3 \
  && chown -R spark:spark /app
 
 COPY --chown=spark:spark normalizer.py order_book.py resync.py partitioning.py ./
-COPY --chown=spark:spark spark_order_book.py spark_order_book_v2.py ./
+COPY --chown=spark:spark spark_order_book.py ./
 
 ENV PYTHONUNBUFFERED=1
 USER spark
