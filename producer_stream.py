@@ -1,12 +1,11 @@
-"""Coinbase Advanced Trade level2 WebSocket to Kafka producer.
+"""Coinbase Advanced Trade level2 ws -> kafka. reconnects on close, trusts
+ws ordering instead of sequence_num (which is subscription-wide and skips
+between l2_data frames). the reconnect snapshot resets the book.
 
-Reconnects on socket close. Advanced Trade's sequence_num is a subscription-
-wide counter shared with non-l2_data frames (subscriptions ACKs, etc.), so it
-skips ahead between l2_data messages and is not usable as a per-channel gap
-signal. We trust WebSocket ordering and rely on TCP close plus our ping to
-detect real disruption. On any reconnect, Coinbase re-emits a fresh snapshot
-that is time-aligned with subsequent updates, so load_snapshot resets the book
-cleanly without the crossed-book artifact of a REST resync.
+First producer made (Coinbase). Updated from Aishwarya's original implementation to the more modern,
+feature ritch api
+
+api: https://docs.cdp.coinbase.com/coinbase-app/advanced-trade-apis/websocket/websocket-channels
 """
 import json
 import os
@@ -17,8 +16,6 @@ from kafka import KafkaProducer
 
 from normalizer import normalize_coinbase_message
 from partitioning import partition_for
-
-_NOW_NS = time.time_ns
 
 
 KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")
@@ -46,7 +43,7 @@ class CoinbaseProducer:
         }))
 
     def on_message(self, ws, message):
-        ingest_ns = _NOW_NS()
+        ingest_ns = time.time_ns()
         try:
             events = normalize_coinbase_message(message)
             for ev in events:

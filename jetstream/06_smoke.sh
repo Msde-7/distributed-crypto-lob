@@ -6,7 +6,8 @@ set -uo pipefail
 
 KAFKA_IP=10.4.36.193
 SPARK_MASTER=spark://10.4.36.243:7077
-DURATION=90
+DURATION="${DURATION:-90}"
+REPLICATION_FACTOR="${REPLICATION_FACTOR:-1}"
 
 cd ~/distributed-crypto-lob
 
@@ -19,7 +20,7 @@ docker run --rm --network host apache/kafka:3.9.0 \
 sleep 2
 docker run --rm --network host apache/kafka:3.9.0 \
     /opt/kafka/bin/kafka-topics.sh --bootstrap-server ${KAFKA_IP:-10.4.36.193}:9092 \
-    --create --if-not-exists --topic lob-events --partitions 8 --replication-factor 1 \
+    --create --if-not-exists --topic lob-events --partitions 8 --replication-factor ${REPLICATION_FACTOR} \
     2>&1 | tail -2
 
 # wipe parquet too, dont want a consistant view of state from prior runs

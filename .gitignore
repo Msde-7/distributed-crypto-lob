@@ -41,3 +41,9 @@ Thumbs.db
 
 # Claude local config
 .claude/
+
+# Media (too large for GitHub)
+*.mp4
+*.mov
+*.avi
+*.mkv

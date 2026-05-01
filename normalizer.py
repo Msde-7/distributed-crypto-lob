@@ -1,11 +1,8 @@
 """Per-exchange frame normalizers.
 
-All normalizers return dicts with:
-    exchange, symbol, side, price, quantity, event_time,
-    sequence, first_sequence, is_snapshot, checksum
-
-first_sequence lets one gap rule cover Coinbase single-seq ticks and
-Binance [U..u] windows.
+Maybe biggest part of the project. one schema across coinbase, binance, kraken
+so the order book can stay venue-blind. first_sequence lets a single gap rule
+cover binance's [U..u] windows AND coinbase single-seq ticks.
 """
 import json
 
@@ -127,7 +124,7 @@ def normalize_kraken_message(message):
         if not flat:
             continue
 
-        # bump counter only when we actually emit events, otherwise an empty
+        # bump counter only when we actualy emit events, otherwise an empty
         # Kraken heartbeat-style frame would leave a phantom sequence hole
         counter = _kraken_counters.get(symbol, -1) + 1
         _kraken_counters[symbol] = counter
@@ -146,7 +143,7 @@ def normalize_kraken_message(message):
                 "sequence": counter,
                 # first_sequence=None: Kraken has no native sequence, our local
                 # counter is not a reliable gap signal, so trust ordering and
-                # rely on CRC32 (future work) for integrity checking
+                # rely on CRC32 (future work and moderately importany, but lower priority) for integrity checking
                 "first_sequence": None,
                 "is_snapshot": is_snapshot,
                 "checksum": checksum if is_last else None,

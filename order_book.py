@@ -1,9 +1,9 @@
 class OrderBook:
-    """Per-symbol L2 book with sequence-based gap detection.
+    """Per-symbol L2 book + gap detection.
 
-    Gap fires when a batch starts strictly after last_sequence + 1.
-    A batch straddling last_sequence (first_sequence <= last_sequence + 1 <= sequence)
-    is treated as the first event after a REST snapshot and accepted.
+    gap = batch starts strictly after last_seq+1. a straddling batch (first_seq
+    <= last+1 <= seq) is treated as the first event after a REST snapshot and
+    accepted. one book per asset per exchange, so 12 total at the moment.
     """
 
     def __init__(self, symbol, max_depth=None):
@@ -15,7 +15,6 @@ class OrderBook:
         self.needs_resync = False
         self.gap_count = 0
         self.old_event_count = 0
-        self.duplicate_count = 0
 
     def _trim(self):
         if self.max_depth is None:
@@ -125,11 +124,12 @@ class OrderBook:
         self._trim()
 
     def best_bid(self):
-        return max(self.bids.keys()) if self.bids else None
+        return max(self.bids.keys()) if self.bids else None #Highest bid is best bid
 
     def best_ask(self):
-        return min(self.asks.keys()) if self.asks else None
+        return min(self.asks.keys()) if self.asks else None #Lowest ask is best ask
 
+    #spread = best_bid - best_ask
     def spread(self):
         bid = self.best_bid()
         ask = self.best_ask()
@@ -152,5 +152,4 @@ class OrderBook:
             "needs_resync": self.needs_resync,
             "gap_count": self.gap_count,
             "old_event_count": self.old_event_count,
-            "duplicate_count": self.duplicate_count,
         }

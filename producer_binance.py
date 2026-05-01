@@ -8,6 +8,8 @@ and accepts the first diff with U <= L+1 <= u.
 Usage:
     python producer_binance.py
     python producer_binance.py BTC-USDT,ETH-USDT
+
+api: https://github.com/binance-us/binance-us-api-docs/blob/master/web-socket-streams.md
 """
 import json
 import os

@@ -4,9 +4,14 @@ Kraken's book channel emits a snapshot on subscribe, then incremental updates
 with a CRC32 checksum. There's no native sequence number, so the normalizer
 stamps a local monotonic counter for ordering.
 
+Inherently, the local counter is always in order
+Checksum validation not really impleented due to time consntraint, but could be further expanded on
+
 Usage:
     python producer_kraken.py
     python producer_kraken.py BTC-USD,ETH-USD
+
+api: https://docs.kraken.com/api/docs/websocket-v2/book/
 """
 import json
 import os

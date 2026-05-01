@@ -49,9 +49,8 @@ def _percentile(sorted_vals, pct):
 # cap per exchange matches the depth window the feed actually streams
 EXCHANGE_MAX_DEPTH = {"kraken": 10}
 
-# ws: producer reconnects its WebSocket, Coinbase/Kraken re-emit a fresh
-#     snapshot that is time-aligned with subsequent updates (no crossed book).
-# rest: consumer fetches a REST snapshot (Binance has no WS snapshot path).
+# coinbase/kraken re-emit a fresh ws snapshot on reconnect; binance has no
+# ws snapshot path so we fetch from rest
 RESYNC_STRATEGY = {
     "coinbase": "ws",
     "binance": "rest",
@@ -165,8 +164,7 @@ def process_batch(batch_df, batch_id):
             f"[{key}] last_sequence={snap['last_sequence']} "
             f"needs_resync={snap['needs_resync']} "
             f"gap_count={snap['gap_count']} "
-            f"old_event_count={snap['old_event_count']} "
-            f"duplicate_count={snap['duplicate_count']}"
+            f"old_event_count={snap['old_event_count']}"
         )
         snapshot_rows.append({
             "batch_id": batch_id,
@@ -183,9 +181,8 @@ def process_batch(batch_df, batch_id):
     elapsed = time.time() - start_time
     records_per_sec = len(rows) / elapsed if elapsed > 0 else 0
 
-    # Idempotent per-batch Parquet write. mode=overwrite with a batch-scoped
-    # path means retries on the same batch_id overwrite rather than append,
-    # which gives exactly-once semantics at the sink.
+    # overwrite + batch-scoped path: retries on the same batch_id replace
+    # rather than append, so the sink stays idempotent
     if SNAPSHOT_SINK_DIR and snapshot_rows:
         try:
             out = spark.createDataFrame(snapshot_rows)
@@ -195,9 +192,8 @@ def process_batch(batch_df, batch_id):
         except Exception as e:
             print(f"[sink] parquet write failed for batch {batch_id}: {e}")
 
-    # p50/p95/p99 end-to-end latency: WS arrival at producer -> batch handling
-    # here in Spark. ingest_ns is stamped once per WS frame, so same-tick events
-    # share a measurement. Skips REST bootstrap snapshots which have None.
+    # end-to-end latency: producer ws-arrival -> spark batch. ingest_ns is per
+    # ws-frame so same-tick events share a measurment. rest bootstraps are None.
     if latencies_ns:
         latencies_ns.sort()
         p50_ms = _percentile(latencies_ns, 0.50) / 1e6

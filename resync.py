@@ -1,18 +1,17 @@
-"""REST snapshot fetchers per exchange.
+"""REST snapshot fetchers. each returns {exchange, symbol, bids, asks, sequence}.
 
-Each returns: {exchange, symbol, bids, asks, sequence}.
-sequence meaning:
-  coinbase: global Exchange sequence, NOT comparable to WS level2 sequence_num
-  binance : lastUpdateId, same namespace as WS diff u
-  kraken  : None (no sequence in REST v2 Depth; CRC is the integrity signal)
+sequence is per-exchange and not cross-comparable: coinbase = global Exchange
+sequence (NOT the ws level2 sequence_num namespace), binance = lastUpdateId
+(same namespace as ws diff u), kraken = None (CRC is the real integrity signal,
+not implemented in time for the project report).
 """
 import os
 
 import requests
 
 
-# Binance geofences api.binance.com from the US (HTTP 451). Default to the US
-# host; override for non-US deployments.
+# Binance geofences api.binance.com from the US (HTTP 451). Default to the US. Less liquid of an exchange, so might have some issues
+# host override for non-US deployments.
 BINANCE_REST_HOST = os.environ.get("BINANCE_REST_HOST", "https://api.binance.us")
 
 
@@ -57,18 +56,7 @@ def load_binance_snapshot(symbol, limit=1000):
     }
 
 
-_KRAKEN_REST_MAP = {
-    "BTC-USD": "XBTUSD",
-    "BTC-USDT": "XBTUSDT",
-    "ETH-USD": "ETHUSD",
-    "ETH-USDT": "ETHUSDT",
-    "SOL-USD": "SOLUSD",
-}
-
-
 def _kraken_rest_pair(symbol):
-    if symbol in _KRAKEN_REST_MAP:
-        return _KRAKEN_REST_MAP[symbol]
     base, quote = symbol.split("-")
     if base == "BTC":
         base = "XBT"
@@ -84,7 +72,7 @@ def load_kraken_snapshot(symbol, count=500):
     if payload.get("error"):
         raise RuntimeError(f"Kraken REST error: {payload['error']}")
 
-    # Kraken returns result keyed by its canonical pair name (e.g. XXBTZUSD).
+    # Kraken returns result keyed by its canonical pair name (XXBTZUSD).
     result = payload.get("result", {})
     if not result:
         raise RuntimeError("Kraken REST returned empty result")

@@ -1,5 +1,5 @@
 """ssh harness for the jetstream2 boxes. handles the bastion case for execs that
-have no public ip (we tunnel through driver01).
+have no public ip (we   go and tunnel through driver01).
 
 usage:
     python ssh_run.py <vm> <script.sh>
@@ -37,11 +37,11 @@ if not KEY_PASSPHRASE:
 # via=None means directly reachable. otherwise its the name of a bastion host
 # that has to be in HOSTS already and reachable on its own.
 HOSTS = {
-    "kafka01":  {"ip": "149.165.174.26",  "via": None},
-    "driver01": {"ip": "149.165.169.161", "via": None},
-    "exec01":   {"ip": "149.165.175.79",  "via": None},
-    "exec02":   {"ip": "149.165.172.58",  "via": None},
+    "kafka01":  {"ip": "149.165.169.221", "via": None},
+    "driver01": {"ip": "149.165.170.217", "via": None},
     # internal-only, no floating ip. go through driver01.
+    "exec01":   {"ip": "10.4.36.131",     "via": "driver01"},
+    "exec02":   {"ip": "10.4.36.36",      "via": "driver01"},
     "exec03":   {"ip": "10.4.36.226",     "via": "driver01"},
     "exec04":   {"ip": "10.4.36.110",     "via": "driver01"},
     "exec05":   {"ip": "10.4.36.20",      "via": "driver01"},
@@ -99,10 +99,6 @@ def run_script(vm_name, script_text, label=None):
         c.close()
         if bastion is not None:
             bastion.close()
-
-
-def run_cmd(vm_name, cmd):
-    return run_script(vm_name, cmd + "\n")
 
 
 if __name__ == "__main__":
