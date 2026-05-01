@@ -44,7 +44,7 @@ docker run -d --name spark-worker --restart unless-stopped \
     --network host \
     --mount type=bind,source=/data,target=/data,bind-propagation=rslave \
     -e SPARK_NO_DAEMONIZE=1 \
-    apache/spark:3.5.3-python3 \
+    "${WORKER_IMAGE:-apache/spark:3.5.3-python3}" \
     /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker \
         --host ${INTERNAL_IP} \
         --webui-port 8081 \

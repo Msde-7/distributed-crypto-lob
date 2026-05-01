@@ -39,6 +39,8 @@ if not KEY_PASSPHRASE:
 HOSTS = {
     "kafka01":  {"ip": "149.165.169.221", "via": None},
     "driver01": {"ip": "149.165.170.217", "via": None},
+    "synthdata": {"ip": "149.165.155.173", "via": None},
+    "synthdata2": {"ip": "149.165.175.79", "via": None},
     # internal-only, no floating ip. go through driver01.
     "exec01":   {"ip": "10.4.36.131",     "via": "driver01"},
     "exec02":   {"ip": "10.4.36.36",      "via": "driver01"},

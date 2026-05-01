@@ -78,7 +78,9 @@ def process_batch(batch_df, batch_id):
     start_time = time.time()
     process_ns = time.time_ns()
 
+    t_collect_start = time.time()
     rows = batch_df.collect()
+    t_collect = time.time() - t_collect_start
 
     if not rows:
         print(f"\n===== BATCH {batch_id} | records=0 =====")
@@ -87,6 +89,7 @@ def process_batch(batch_df, batch_id):
     metrics["total_batches"] += 1
     metrics["total_records"] += len(rows)
 
+    t_group_start = time.time()
     grouped = {}
     latencies_ns = []
     for row in rows:
@@ -96,10 +99,12 @@ def process_batch(batch_df, batch_id):
         ing = event.get("ingest_ns")
         if ing is not None:
             latencies_ns.append(process_ns - ing)
+    t_group = time.time() - t_group_start
     snapshot_rows = []
 
     print(f"\n===== BATCH {batch_id} | records={len(rows)} =====")
 
+    t_apply_start = time.time()
     for key, events in grouped.items():
         exchange, symbol = key.split(":", 1)
         # snapshot events before updates within the same sequence so a
@@ -178,11 +183,14 @@ def process_batch(batch_df, batch_id):
             "ts_ns": process_ns,
         })
 
+    t_apply = time.time() - t_apply_start
+
     elapsed = time.time() - start_time
     records_per_sec = len(rows) / elapsed if elapsed > 0 else 0
 
     # overwrite + batch-scoped path: retries on the same batch_id replace
     # rather than append, so the sink stays idempotent
+    t_write_start = time.time()
     if SNAPSHOT_SINK_DIR and snapshot_rows:
         try:
             out = spark.createDataFrame(snapshot_rows)
@@ -191,6 +199,7 @@ def process_batch(batch_df, batch_id):
                 .parquet(f"{SNAPSHOT_SINK_DIR}/batch_id={batch_id}"))
         except Exception as e:
             print(f"[sink] parquet write failed for batch {batch_id}: {e}")
+    t_write = time.time() - t_write_start
 
     # end-to-end latency: producer ws-arrival -> spark batch. ingest_ns is per
     # ws-frame so same-tick events share a measurment. rest bootstraps are None.
@@ -209,6 +218,10 @@ def process_batch(batch_df, batch_id):
     print(f"batch_id={batch_id}")
     print(f"batch_records={len(rows)}")
     print(f"batch_time_sec={elapsed:.4f}")
+    print(f"t_collect_sec={t_collect:.4f}")
+    print(f"t_group_sec={t_group:.4f}")
+    print(f"t_apply_sec={t_apply:.4f}")
+    print(f"t_write_sec={t_write:.4f}")
     print(f"batch_records_per_sec={records_per_sec:.2f}")
     print(f"latency_p50_ms={p50_ms:.2f}")
     print(f"latency_p95_ms={p95_ms:.2f}")
@@ -226,7 +239,7 @@ raw_df = spark.readStream \
     .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP) \
     .option("subscribe", KAFKA_TOPIC) \
     .option("startingOffsets", STARTING_OFFSETS) \
-    .option("maxOffsetsPerTrigger", 50000) \
+    .option("maxOffsetsPerTrigger", int(os.environ.get("MAX_OFFSETS_PER_TRIGGER", "50000"))) \
     .load()
 
 parsed_df = raw_df.selectExpr("CAST(value AS STRING) AS value_str") \
